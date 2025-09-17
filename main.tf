@@ -410,26 +410,14 @@ resource "kubernetes_ingress_v1" "moodle" {
 # REPLACE your existing module "rds_postgresql" block with this:
 module "rds_postgresql" {
   source = "./modules/rds-postgresql"
+  name   = var.name
 
-  # minimal inputs to match your current wiring
-  name               = var.name
-  vpc_id             = aws_vpc.this.id
-  private_subnet_ids = [for s in values(aws_subnet.private) : s.id]
+  vpc_id             = var.vpc_id
+  private_subnet_ids = var.private_subnet_ids
 
-  # reuse the same DB password you already feed into k8s
-  # (if you don't have var.db_password, remove this line to let the module
-  #  generate a random password and optionally write it to Secrets Manager)
   master_password = var.db_password
 
-  # --- critical for clean destroy ---
-  deletion_protection              = false
-  skip_final_snapshot              = true
-  final_snapshot_identifier_prefix = null
-
-  # optional: keep your existing tags/overrides if you had them
-  # tags = var.tags
-  # parameter_overrides = {
-  #   rds.force_ssl               = "1"
-  #   log_min_duration_statement  = "500"
-  # }
+  # Make destroy painless
+  deletion_protection = false
+  skip_final_snapshot = true
 }
