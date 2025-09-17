@@ -1,0 +1,59 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow",
+      "Action": [
+        "rds:CreateDBSubnetGroup","rds:DeleteDBSubnetGroup","rds:ModifyDBSubnetGroup",
+        "rds:DescribeDBSubnetGroups","rds:ListTagsForResource","rds:AddTagsToResource","rds:RemoveTagsFromResource",
+        "rds:CreateDBInstance","rds:ModifyDBInstance","rds:DeleteDBInstance","rds:DescribeDBInstances"
+      ],
+      "Resource": "*"
+    },
+    { "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret","secretsmanager:PutSecretValue","secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue","secretsmanager:TagResource","secretsmanager:UntagResource",
+        "secretsmanager:UpdateSecret","secretsmanager:DeleteSecret"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringLike": { "secretsmanager:Name": "moodle-master-credentials-*" }
+      }
+    },
+    { "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole","iam:DeleteRole","iam:GetRole","iam:TagRole","iam:UntagRole",
+        "iam:AttachRolePolicy","iam:DetachRolePolicy","iam:CreatePolicy","iam:DeletePolicy","iam:GetPolicy",
+        "iam:CreateOpenIDConnectProvider","iam:DeleteOpenIDConnectProvider","iam:ListOpenIDConnectProviders",
+        "iam:CreateServiceLinkedRole"
+      ],
+      "Resource": "*"
+    },
+    { "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::866934333672:role/moodle-eks-*",
+        "arn:aws:iam::866934333672:role/*node-group*"
+      ],
+      "Condition": { "StringEquals": { "iam:PassedToService": "eks.amazonaws.com" } }
+    },
+    { "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSecurityGroup","ec2:DeleteSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress","ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress","ec2:RevokeSecurityGroupEgress",
+        "ec2:Describe*","ec2:CreateTags","ec2:DeleteTags"
+      ],
+      "Resource": "*"
+    },
+    { "Effect": "Allow",
+      "Action": [
+        "eks:CreateCluster","eks:DescribeCluster","eks:UpdateClusterConfig","eks:DeleteCluster",
+        "eks:CreateNodegroup","eks:DescribeNodegroup","eks:UpdateNodegroupConfig","eks:DeleteNodegroup",
+        "eks:ListClusters","eks:ListNodegroups","eks:TagResource","eks:UntagResource",
+        "eks:DescribeAddonVersions"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
