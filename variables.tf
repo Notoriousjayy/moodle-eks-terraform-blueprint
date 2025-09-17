@@ -1,57 +1,110 @@
 variable "name" {
-  description = "Base name/prefix for resources"
+  description = "Project/base name used for resources."
   type        = string
   default     = "moodle"
 }
 
 variable "region" {
-  description = "AWS region"
+  description = "AWS region."
   type        = string
   default     = "us-east-1"
 }
 
-variable "eks_cluster_name" {
-  description = "Name of the EKS cluster to deploy into"
-  type        = string
+# --- Networking strategy ---
+variable "create_vpc" {
+  description = "If true, create a new VPC + subnets; otherwise use provided IDs."
+  type        = bool
+  default     = true
 }
 
+# If create_vpc = true, these define the new VPC
+variable "vpc_cidr" {
+  type        = string
+  default     = "10.0.0.0/16"
+}
+variable "azs" {
+  description = "Two or more AZs for private/public subnets."
+  type        = list(string)
+  default     = ["us-east-1a", "us-east-1b"]
+}
+variable "private_subnet_cidrs" {
+  type        = list(string)
+  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+}
+variable "public_subnet_cidrs" {
+  type        = list(string)
+  default     = ["10.0.101.0/24", "10.0.102.0/24"]
+}
+variable "enable_nat_gateway" {
+  type    = bool
+  default = true
+}
+variable "single_nat_gateway" {
+  type    = bool
+  default = true
+}
+
+# If create_vpc = false, supply existing IDs below
 variable "vpc_id" {
-  description = "VPC ID where RDS and EKS live"
+  description = "Existing VPC ID when create_vpc = false."
   type        = string
+  default     = null
 }
-
 variable "private_subnet_ids" {
-  description = "Private subnet IDs for RDS (>= 2 for Multi-AZ)"
+  description = "Existing private subnet IDs when create_vpc = false."
   type        = list(string)
+  default     = []
 }
 
+# --- Security group allowlists for RDS (extras; EKS node SG is auto-added) ---
 variable "allowed_security_group_ids" {
-  description = "Security group IDs allowed to reach RDS (e.g., EKS node SGs)"
+  description = "Optional additional SG IDs allowed to reach the DB (e.g., bastion)."
   type        = list(string)
   default     = []
 }
-
 variable "allowed_cidr_blocks" {
-  description = "CIDRs allowed to reach RDS (use only if you cannot use SG IDs)"
+  description = "Optional CIDR blocks for DB ingress (leave empty for cluster-only)."
   type        = list(string)
   default     = []
 }
 
-# DB settings (aligned with your plan)
+# --- EKS ---
+variable "cluster_version" {
+  description = "EKS Kubernetes version."
+  type        = string
+  default     = "1.30"
+}
+variable "node_instance_types" {
+  type    = list(string)
+  default = ["t3.medium"]
+}
+variable "node_desired_size" {
+  type    = number
+  default = 1
+}
+variable "node_min_size" {
+  type    = number
+  default = 1
+}
+variable "node_max_size" {
+  type    = number
+  default = 3
+}
+
+# --- RDS PostgreSQL ---
 variable "db_name" {
   type    = string
-  default = "appdb"
+  default = "moodle"
 }
 variable "db_username" {
   type    = string
-  default = "app_user"
+  default = "moodleuser"
 }
 variable "db_password" {
-  description = "Master password for the RDS instance (also used in the k8s secret)"
   type        = string
   sensitive   = true
+  description = "8–128 chars; avoid / @ \" or spaces."
 }
-
 variable "db_instance_class" {
   type    = string
   default = "db.t4g.medium"
@@ -71,59 +124,4 @@ variable "db_engine_version" {
 variable "db_storage_type" {
   type    = string
   default = "gp3"
-}
-
-# Ingress / TLS
-variable "moodle_host" {
-  description = "Public hostname for Moodle (ALB Ingress)"
-  type        = string
-  default     = ""
-}
-variable "acm_certificate_arn" {
-  description = "ACM cert ARN for TLS on the ALB"
-  type        = string
-  default     = ""
-}
-
-# --- VPC creation toggle & settings ---
-variable "create_vpc" {
-  description = "Create a new VPC for EKS/RDS. If false, provide vpc_id/private_subnet_ids."
-  type        = bool
-  default     = true
-}
-
-variable "vpc_cidr" {
-  description = "CIDR for the new VPC (when create_vpc = true)."
-  type        = string
-  default     = "10.0.0.0/16"
-}
-
-variable "azs" {
-  description = "AZs to use for subnets (when create_vpc = true)."
-  type        = list(string)
-  default     = ["us-east-1a", "us-east-1b"]
-}
-
-variable "private_subnet_cidrs" {
-  description = "Private subnet CIDRs (one per AZ) for nodes/RDS."
-  type        = list(string)
-  default     = ["10.0.1.0/24", "10.0.2.0/24"]
-}
-
-variable "public_subnet_cidrs" {
-  description = "Public subnet CIDRs (for ALB/NAT)."
-  type        = list(string)
-  default     = ["10.0.101.0/24", "10.0.102.0/24"]
-}
-
-variable "enable_nat_gateway" {
-  description = "Provision NAT so private nodes can reach the internet."
-  type        = bool
-  default     = true
-}
-
-variable "single_nat_gateway" {
-  description = "Single NAT gateway to reduce cost."
-  type        = bool
-  default     = true
 }

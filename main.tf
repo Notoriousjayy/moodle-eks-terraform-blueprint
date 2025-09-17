@@ -1,6 +1,6 @@
 # main.tf — drop-in replacement
-# Provisions a NEW EKS cluster with a random, prefixed name and uses it for Kubernetes resources.
-# (All multi-arg blocks expanded to avoid single-line block errors.)
+# Provisions a NEW EKS cluster (random, prefixed name) and a NEW VPC when no IDs are supplied.
+# If var.vpc_id and var.private_subnet_ids are provided, those are used instead.
 
 terraform {
   required_version = ">= 1.4.0"
@@ -27,13 +27,51 @@ provider "aws" {
 # Who's running this? (so we can grant them admin in the cluster)
 data "aws_caller_identity" "current" {}
 
+# Discover available AZs (for VPC creation when IDs are not provided)
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
 # Suffix for cluster name
 resource "random_id" "eks_suffix" {
   byte_length = 2 # 4 hex chars
 }
 
+# ---------------- VPC (auto-create if no IDs given) ----------------
+locals {
+  # If BOTH vpc_id and private_subnet_ids are set, use existing; else, create a new VPC.
+  use_existing_vpc = try(var.vpc_id != null && var.vpc_id != "" && length(var.private_subnet_ids) > 0, false)
+}
+
+module "vpc" {
+  count   = local.use_existing_vpc ? 0 : 1
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+
+  name = "${var.name}-vpc"
+  cidr = "10.0.0.0/16"
+
+  # Take the first two AZs for simplicity
+  azs             = slice(data.aws_availability_zones.available.names, 0, 2)
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24"]
+
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+
+  tags = {
+    Project = var.name
+  }
+}
+
 locals {
   cluster_name = "${var.name}-eks-${random_id.eks_suffix.hex}" # e.g., moodle-eks-a1b2
+
+  vpc_id_effective             = local.use_existing_vpc ? var.vpc_id              : module.vpc[0].vpc_id
+  private_subnet_ids_effective = local.use_existing_vpc ? var.private_subnet_ids  : module.vpc[0].private_subnets
 
   # IMPORTANT: Always include the "eks_nodes" key so for_each KEYS are known at plan.
   # Values may still be unknown at plan, which is fine.
@@ -51,8 +89,8 @@ module "eks" {
   cluster_name    = local.cluster_name
   cluster_version = "1.30"
 
-  vpc_id     = var.vpc_id
-  subnet_ids = var.private_subnet_ids
+  vpc_id     = local.vpc_id_effective
+  subnet_ids = local.private_subnet_ids_effective
 
   enable_irsa = true
 
@@ -66,7 +104,7 @@ module "eks" {
       min_size       = 1
       max_size       = 3
       desired_size   = 1
-      subnet_ids     = var.private_subnet_ids
+      subnet_ids     = local.private_subnet_ids_effective
     }
   }
 
@@ -76,6 +114,10 @@ module "eks" {
     kube-proxy         = {}
     vpc-cni            = {}
     aws-ebs-csi-driver = {}
+  }
+
+  tags = {
+    Project = var.name
   }
 }
 
@@ -96,8 +138,8 @@ module "rds_postgresql" {
 
   # Identity / networking
   name               = var.name
-  vpc_id             = var.vpc_id
-  private_subnet_ids = var.private_subnet_ids
+  vpc_id             = local.vpc_id_effective
+  private_subnet_ids = local.private_subnet_ids_effective
 
   # Network access: include EKS node SG automatically (map with stable keys)
   allowed_security_group_ids = local.rds_allowed_sg_map
@@ -119,6 +161,10 @@ module "rds_postgresql" {
   publicly_accessible         = false
   backup_retention_period     = 7
   skip_final_snapshot         = true
+
+  tags = {
+    Project = var.name
+  }
 }
 
 # ---------------- Kubernetes objects ----------------
