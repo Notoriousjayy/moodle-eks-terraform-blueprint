@@ -70,8 +70,8 @@ module "vpc" {
 locals {
   cluster_name = "${var.name}-eks-${random_id.eks_suffix.hex}" # e.g., moodle-eks-a1b2
 
-  vpc_id_effective             = local.use_existing_vpc ? var.vpc_id              : module.vpc[0].vpc_id
-  private_subnet_ids_effective = local.use_existing_vpc ? var.private_subnet_ids  : module.vpc[0].private_subnets
+  vpc_id_effective             = local.use_existing_vpc ? var.vpc_id : module.vpc[0].vpc_id
+  private_subnet_ids_effective = local.use_existing_vpc ? var.private_subnet_ids : module.vpc[0].private_subnets
 
   # IMPORTANT: Always include the "eks_nodes" key so for_each KEYS are known at plan.
   # Values may still be unknown at plan, which is fine.
@@ -346,18 +346,22 @@ resource "kubernetes_ingress_v1" "moodle" {
   metadata {
     name      = "moodle"
     namespace = kubernetes_namespace.moodle.metadata[0].name
+    # in kubernetes_ingress_v1.moodle.metadata.annotations
     annotations = merge(
       {
-        "kubernetes.io/ingress.class"            = "alb"
-        "alb.ingress.kubernetes.io/scheme"       = "internet-facing"
-        "alb.ingress.kubernetes.io/target-type"  = "ip"
-        "alb.ingress.kubernetes.io/ssl-redirect" = "443"
-        "alb.ingress.kubernetes.io/listen-ports" = jsonencode([{ HTTP = 80 }, { HTTPS = 443 }])
+        "kubernetes.io/ingress.class"           = "alb"
+        "alb.ingress.kubernetes.io/scheme"      = "internet-facing"
+        "alb.ingress.kubernetes.io/target-type" = "ip"
       },
       var.acm_certificate_arn != "" ? {
         "alb.ingress.kubernetes.io/certificate-arn" = var.acm_certificate_arn
-      } : {}
+        "alb.ingress.kubernetes.io/listen-ports"    = jsonencode([{ HTTP = 80 }, { HTTPS = 443 }])
+        "alb.ingress.kubernetes.io/ssl-redirect"    = "443"
+        } : {
+        "alb.ingress.kubernetes.io/listen-ports" = jsonencode([{ HTTP = 80 }])
+      }
     )
+
   }
 
   spec {

@@ -19,8 +19,8 @@ variable "create_vpc" {
 
 # If create_vpc = true, these define the new VPC
 variable "vpc_cidr" {
-  type        = string
-  default     = "10.0.0.0/16"
+  type    = string
+  default = "10.0.0.0/16"
 }
 variable "azs" {
   description = "Two or more AZs for private/public subnets."
@@ -28,12 +28,12 @@ variable "azs" {
   default     = ["us-east-1a", "us-east-1b"]
 }
 variable "private_subnet_cidrs" {
-  type        = list(string)
-  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+  type    = list(string)
+  default = ["10.0.1.0/24", "10.0.2.0/24"]
 }
 variable "public_subnet_cidrs" {
-  type        = list(string)
-  default     = ["10.0.101.0/24", "10.0.102.0/24"]
+  type    = list(string)
+  default = ["10.0.101.0/24", "10.0.102.0/24"]
 }
 variable "enable_nat_gateway" {
   type    = bool
@@ -124,4 +124,17 @@ variable "db_engine_version" {
 variable "db_storage_type" {
   type    = string
   default = "gp3"
+}
+
+# Optional TLS + host for the ALB Ingress
+variable "acm_certificate_arn" {
+  description = "ACM cert ARN for HTTPS on the ALB Ingress. Leave empty to run HTTP-only."
+  type        = string
+  default     = ""
+}
+
+variable "moodle_host" {
+  description = "DNS host for the Ingress (e.g., lms.example.com). Leave empty to use ALB DNS."
+  type        = string
+  default     = ""
 }
