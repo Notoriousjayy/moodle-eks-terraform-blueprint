@@ -13,6 +13,10 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = ">= 2.24"
     }
+    helm = {
+      source  = "hashicorp/helm"
+      version = ">= 2.9.0, < 3.0.0"
+    }
     random = {
       source  = "hashicorp/random"
       version = ">= 3.5"
@@ -21,7 +25,18 @@ terraform {
       source  = "hashicorp/http"
       version = ">= 3.4.0"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = ">= 0.9.0"
+    }
   }
+}
+
+# Optional override for EKS API access CIDRs; defaults to your current /32 if empty
+variable "api_allowed_cidrs" {
+  description = "CIDRs allowed to reach the EKS public API. Leave empty to fall back to your current /32."
+  type        = list(string)
+  default     = []
 }
 
 provider "aws" {
@@ -83,7 +98,8 @@ locals {
   private_subnet_ids_effective = local.use_existing_vpc ? var.private_subnet_ids : module.vpc[0].private_subnets
 
   # Caller IP /32 for EKS public API scoping
-  caller_cidr = "${chomp(data.http.caller_ip.response_body)}/32"
+  caller_ip   = chomp(data.http.caller_ip.response_body)
+  caller_cidr = "${local.caller_ip}/32"
 
   # IMPORTANT: Always include the "eks_nodes" key so for_each KEYS are known at plan.
   rds_allowed_sg_map = merge(
@@ -139,23 +155,23 @@ module "eks" {
   # Add the Terraform caller as cluster-admin via EKS Access Entries (replaces aws-auth args)
   enable_cluster_creator_admin_permissions = true
 
-  # Make the API reachable to Terraform by enabling public access scoped to your IP
-  cluster_endpoint_public_access          = true
-  cluster_endpoint_private_access         = true
-  cluster_endpoint_public_access_cidrs    = [local.caller_cidr]
+  # Make the API reachable to Terraform by enabling public access scoped to your IP or overrides
+  cluster_endpoint_public_access       = true
+  cluster_endpoint_private_access      = true
+  cluster_endpoint_public_access_cidrs = length(var.api_allowed_cidrs) > 0 ? var.api_allowed_cidrs : [local.caller_cidr]
 
   # One simple managed node group (uses our custom LT to avoid org denial on EKS-created LT)
   eks_managed_node_groups = {
     default = {
-      instance_types              = ["t3.medium"]
-      min_size                    = 1
-      max_size                    = 3
-      desired_size                = 1
-      subnet_ids                  = local.private_subnet_ids_effective
-      use_custom_launch_template  = false
-      launch_template_id          = aws_launch_template.mng.id
-      launch_template_version     = "$Latest"
-      ami_type                    = "AL2_x86_64" # let EKS pick the optimized AMI
+      instance_types             = ["t3.medium"]
+      min_size                   = 1
+      max_size                   = 3
+      desired_size               = 1
+      subnet_ids                 = local.private_subnet_ids_effective
+      use_custom_launch_template = false
+      launch_template_id         = aws_launch_template.mng.id
+      launch_template_version    = "$Latest"
+      ami_type                   = "AL2_x86_64" # let EKS pick the optimized AMI
     }
   }
 
@@ -167,12 +183,43 @@ module "eks" {
     aws-ebs-csi-driver = {}
   }
 
-
   tags = {
     Project = var.name
   }
 
   depends_on = [aws_launch_template.mng]
+}
+
+# --------- Providers (exec auth for fresh tokens) ----------
+# NOTE: Requires awscli available in the environment where Terraform runs.
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.region]
+  }
+}
+
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.region]
+    }
+  }
+}
+
+# Grace period to ensure API is reachable from your IP before Helm/K8s ops
+resource "time_sleep" "wait_for_api" {
+  depends_on      = [module.eks]
+  create_duration = "60s"
 }
 
 module "eks_blueprints_addons" {
@@ -196,19 +243,14 @@ module "eks_blueprints_addons" {
   }
 
   tags = { Project = var.name }
-  depends_on = [module.eks]
-}
 
+  # Ensure this module uses our configured providers and waits for API reachability
+  providers = {
+    kubernetes = kubernetes
+    helm       = helm
+  }
 
-# Kubernetes auth for provider
-data "aws_eks_cluster_auth" "this" {
-  name = module.eks.cluster_name
-}
-
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  token                  = data.aws_eks_cluster_auth.this.token
+  depends_on = [time_sleep.wait_for_api]
 }
 
 # ---------------- RDS via MODULE ONLY ----------------
@@ -251,7 +293,7 @@ resource "kubernetes_namespace" "moodle" {
   metadata {
     name = "moodle"
   }
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 # EBS gp3 StorageClass (non-default)
@@ -270,7 +312,7 @@ resource "kubernetes_storage_class" "gp3" {
     type = "gp3"
   }
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 # PVC for Moodle persistent data
@@ -289,7 +331,7 @@ resource "kubernetes_persistent_volume_claim" "moodle_pvc" {
     }
   }
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 # DB password Secret (provider expects base64-encoded `data`)
@@ -303,7 +345,7 @@ resource "kubernetes_secret" "db" {
     password = base64encode(var.db_password)
   }
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 # Moodle Deployment (Bitnami image)
@@ -361,7 +403,7 @@ resource "kubernetes_deployment" "moodle" {
             value = var.db_username
           }
           env {
-            name = "MOODLE_DATABASE_PASSWORD"
+            name  = "MOODLE_DATABASE_PASSWORD"
             value_from {
               secret_key_ref {
                 name = kubernetes_secret.db.metadata[0].name
@@ -404,7 +446,7 @@ resource "kubernetes_deployment" "moodle" {
     }
   }
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 # ClusterIP service (fronted by ALB Ingress if controller installed)
@@ -428,7 +470,7 @@ resource "kubernetes_service" "moodle" {
     type = "ClusterIP"
   }
 
-  depends_on = [module.eks]
+  depends_on = [time_sleep.wait_for_api]
 }
 
 # ALB Ingress (requires AWS Load Balancer Controller installed in the cluster)
@@ -479,7 +521,8 @@ resource "kubernetes_ingress_v1" "moodle" {
     }
   }
 
-  depends_on = [module.eks]
+  # Ensure ALB Controller is present before creating the Ingress
+  depends_on = [module.eks_blueprints_addons]
 }
 
 # ---------------- Helpful outputs ----------------
