@@ -219,7 +219,7 @@ provider "helm" {
 # Grace period to ensure API is reachable from your IP before Helm/K8s ops
 resource "time_sleep" "wait_for_api" {
   depends_on      = [module.eks]
-  create_duration = "60s"
+  create_duration = "180s" # was 60s
 }
 
 module "eks_blueprints_addons" {
@@ -251,6 +251,42 @@ module "eks_blueprints_addons" {
   }
 
   depends_on = [time_sleep.wait_for_api]
+}
+
+# ----- Robust readiness gate: proceed only after API + core addons are up -----
+resource "null_resource" "wait_for_cluster_ready" {
+  depends_on = [
+    module.eks,
+    module.eks_blueprints_addons,
+    time_sleep.wait_for_api
+  ]
+
+  triggers = {
+    cluster_name = module.eks.cluster_name
+    endpoint     = module.eks.cluster_endpoint
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-lc"]
+    command = <<EOT
+set -eu
+aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}
+
+# API health (short request timeout so we fail fast if unreachable)
+kubectl --request-timeout=15s get --raw=/readyz >/dev/null
+
+# Core addon readiness
+kubectl -n kube-system rollout status deploy/coredns --timeout=5m
+
+# EBS CSI (managed addon) readiness — only wait if the objects already exist
+if kubectl -n kube-system get deploy ebs-csi-controller >/dev/null 2>&1; then
+  kubectl -n kube-system rollout status deploy/ebs-csi-controller --timeout=5m
+fi
+if kubectl -n kube-system get daemonset ebs-csi-node >/dev/null 2>&1; then
+  kubectl -n kube-system rollout status daemonset/ebs-csi-node --timeout=5m
+fi
+EOT
+  }
 }
 
 # ---------------- RDS via MODULE ONLY ----------------
@@ -293,7 +329,7 @@ resource "kubernetes_namespace" "moodle" {
   metadata {
     name = "moodle"
   }
-  depends_on = [time_sleep.wait_for_api]
+  depends_on = [null_resource.wait_for_cluster_ready]
 }
 
 # EBS gp3 StorageClass (non-default)
@@ -312,7 +348,7 @@ resource "kubernetes_storage_class" "gp3" {
     type = "gp3"
   }
 
-  depends_on = [time_sleep.wait_for_api]
+  depends_on = [null_resource.wait_for_cluster_ready]
 }
 
 # PVC for Moodle persistent data
@@ -331,7 +367,7 @@ resource "kubernetes_persistent_volume_claim" "moodle_pvc" {
     }
   }
 
-  depends_on = [time_sleep.wait_for_api]
+  depends_on = [null_resource.wait_for_cluster_ready]
 }
 
 # DB password Secret (provider expects base64-encoded `data`)
@@ -345,7 +381,7 @@ resource "kubernetes_secret" "db" {
     password = base64encode(var.db_password)
   }
 
-  depends_on = [time_sleep.wait_for_api]
+  depends_on = [null_resource.wait_for_cluster_ready]
 }
 
 # Moodle Deployment (Bitnami image)
@@ -446,7 +482,7 @@ resource "kubernetes_deployment" "moodle" {
     }
   }
 
-  depends_on = [time_sleep.wait_for_api]
+  depends_on = [null_resource.wait_for_cluster_ready]
 }
 
 # ClusterIP service (fronted by ALB Ingress if controller installed)
@@ -470,7 +506,7 @@ resource "kubernetes_service" "moodle" {
     type = "ClusterIP"
   }
 
-  depends_on = [time_sleep.wait_for_api]
+  depends_on = [null_resource.wait_for_cluster_ready]
 }
 
 # ALB Ingress (requires AWS Load Balancer Controller installed in the cluster)
