@@ -17,6 +17,10 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.5"
     }
+    http = {
+      source  = "hashicorp/http"
+      version = ">= 3.4.0"
+    }
   }
 }
 
@@ -30,6 +34,11 @@ data "aws_caller_identity" "current" {}
 # Discover available AZs (for VPC creation when IDs are not provided)
 data "aws_availability_zones" "available" {
   state = "available"
+}
+
+# Your current public IP for scoping EKS API access (e.g., "203.0.113.5")
+data "http" "caller_ip" {
+  url = "https://checkip.amazonaws.com/"
 }
 
 # Suffix for cluster name
@@ -73,12 +82,45 @@ locals {
   vpc_id_effective             = local.use_existing_vpc ? var.vpc_id : module.vpc[0].vpc_id
   private_subnet_ids_effective = local.use_existing_vpc ? var.private_subnet_ids : module.vpc[0].private_subnets
 
+  # Caller IP /32 for EKS public API scoping
+  caller_cidr = "${chomp(data.http.caller_ip.response_body)}/32"
+
   # IMPORTANT: Always include the "eks_nodes" key so for_each KEYS are known at plan.
-  # Values may still be unknown at plan, which is fine.
   rds_allowed_sg_map = merge(
     { for i, sg in try(var.allowed_security_group_ids, []) : "user_${i}" => sg },
     { "eks_nodes" = module.eks.node_security_group_id }
   )
+}
+
+# Minimal custom Launch Template for the node group (lets us control LT ownership/tags)
+# NOTE: Do not set security groups / user_data / AMI here; EKS will handle those.
+resource "aws_launch_template" "mng" {
+  name_prefix            = "${var.name}-mng-"
+  update_default_version = true
+
+  # Give org-required tags to Instances/Volumes/NICs at launch (common SCP pattern).
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Project = var.name
+    }
+  }
+  tag_specifications {
+    resource_type = "volume"
+    tags = {
+      Project = var.name
+    }
+  }
+  tag_specifications {
+    resource_type = "network-interface"
+    tags = {
+      Project = var.name
+    }
+  }
+
+  tags = {
+    Project = var.name
+  }
 }
 
 # ---------------- EKS (managed via official module) ----------------
@@ -97,14 +139,23 @@ module "eks" {
   # Add the Terraform caller as cluster-admin via EKS Access Entries (replaces aws-auth args)
   enable_cluster_creator_admin_permissions = true
 
-  # One simple managed node group
+  # Make the API reachable to Terraform by enabling public access scoped to your IP
+  cluster_endpoint_public_access          = true
+  cluster_endpoint_private_access         = true
+  cluster_endpoint_public_access_cidrs    = [local.caller_cidr]
+
+  # One simple managed node group (uses our custom LT to avoid org denial on EKS-created LT)
   eks_managed_node_groups = {
     default = {
-      instance_types = ["t3.medium"]
-      min_size       = 1
-      max_size       = 3
-      desired_size   = 1
-      subnet_ids     = local.private_subnet_ids_effective
+      instance_types              = ["t3.medium"]
+      min_size                    = 1
+      max_size                    = 3
+      desired_size                = 1
+      subnet_ids                  = local.private_subnet_ids_effective
+      use_custom_launch_template  = true
+      launch_template_id          = aws_launch_template.mng.id
+      launch_template_version     = "$Latest"
+      ami_type                    = "AL2_x86_64" # let EKS pick the optimized AMI
     }
   }
 
@@ -116,9 +167,14 @@ module "eks" {
     aws-ebs-csi-driver = {}
   }
 
+  # ALB Ingress Controller for your kubernetes_ingress_v1 "alb"
+  enable_aws_load_balancer_controller = true
+
   tags = {
     Project = var.name
   }
+
+  depends_on = [aws_launch_template.mng]
 }
 
 # Kubernetes auth for provider
@@ -172,6 +228,7 @@ resource "kubernetes_namespace" "moodle" {
   metadata {
     name = "moodle"
   }
+  depends_on = [module.eks]
 }
 
 # EBS gp3 StorageClass (non-default)
@@ -189,6 +246,8 @@ resource "kubernetes_storage_class" "gp3" {
   parameters = {
     type = "gp3"
   }
+
+  depends_on = [module.eks]
 }
 
 # PVC for Moodle persistent data
@@ -206,6 +265,8 @@ resource "kubernetes_persistent_volume_claim" "moodle_pvc" {
       }
     }
   }
+
+  depends_on = [module.eks]
 }
 
 # DB password Secret (provider expects base64-encoded `data`)
@@ -218,6 +279,8 @@ resource "kubernetes_secret" "db" {
   data = {
     password = base64encode(var.db_password)
   }
+
+  depends_on = [module.eks]
 }
 
 # Moodle Deployment (Bitnami image)
@@ -317,6 +380,8 @@ resource "kubernetes_deployment" "moodle" {
       }
     }
   }
+
+  depends_on = [module.eks]
 }
 
 # ClusterIP service (fronted by ALB Ingress if controller installed)
@@ -339,6 +404,8 @@ resource "kubernetes_service" "moodle" {
     }
     type = "ClusterIP"
   }
+
+  depends_on = [module.eks]
 }
 
 # ALB Ingress (requires AWS Load Balancer Controller installed in the cluster)
@@ -346,7 +413,6 @@ resource "kubernetes_ingress_v1" "moodle" {
   metadata {
     name      = "moodle"
     namespace = kubernetes_namespace.moodle.metadata[0].name
-    # in kubernetes_ingress_v1.moodle.metadata.annotations
     annotations = merge(
       {
         "kubernetes.io/ingress.class"           = "alb"
@@ -357,11 +423,10 @@ resource "kubernetes_ingress_v1" "moodle" {
         "alb.ingress.kubernetes.io/certificate-arn" = var.acm_certificate_arn
         "alb.ingress.kubernetes.io/listen-ports"    = jsonencode([{ HTTP = 80 }, { HTTPS = 443 }])
         "alb.ingress.kubernetes.io/ssl-redirect"    = "443"
-        } : {
+      } : {
         "alb.ingress.kubernetes.io/listen-ports" = jsonencode([{ HTTP = 80 }])
       }
     )
-
   }
 
   spec {
@@ -390,6 +455,8 @@ resource "kubernetes_ingress_v1" "moodle" {
       }
     }
   }
+
+  depends_on = [module.eks]
 }
 
 # ---------------- Helpful outputs ----------------
