@@ -41,8 +41,8 @@ resource "random_id" "final_snap_suffix" {
 
 # Password generator that avoids '/', '@', '\"', and space
 resource "random_password" "master" {
-  length           = 20
-  special          = true
+  length  = 20
+  special = true
   # Allowed specials per RDS rules (exclude '/', '@', '\"', and space)
   override_special = "!#$%^&*()-_=+[]{}:;,.?~%"
   keepers = {
@@ -126,8 +126,8 @@ resource "aws_secretsmanager_secret" "master" {
 }
 
 resource "aws_secretsmanager_secret_version" "master" {
-  count       = var.create_master_secret ? 1 : 0
-  secret_id   = aws_secretsmanager_secret.master[0].id
+  count     = var.create_master_secret ? 1 : 0
+  secret_id = aws_secretsmanager_secret.master[0].id
   secret_string = jsonencode({
     username = var.master_username
     password = local.master_password_final
@@ -136,49 +136,49 @@ resource "aws_secretsmanager_secret_version" "master" {
 
 # RDS PostgreSQL instance
 resource "aws_db_instance" "this" {
-  identifier                           = local.db_identifier
-  engine                               = "postgres"
-  engine_version                       = var.engine_version
-  db_name                              = var.db_name
-  username                             = var.master_username
-  password                             = local.master_password_final
-  instance_class                       = var.instance_class
+  identifier     = local.db_identifier
+  engine         = "postgres"
+  engine_version = var.engine_version
+  db_name        = var.db_name
+  username       = var.master_username
+  password       = local.master_password_final
+  instance_class = var.instance_class
 
-  allocated_storage                    = var.allocated_storage
-  max_allocated_storage                = var.max_allocated_storage
-  storage_encrypted                    = var.storage_encrypted
-  kms_key_id                           = var.kms_key_id
-  storage_type                         = var.storage_type
-  iops                                 = var.iops
+  allocated_storage     = var.allocated_storage
+  max_allocated_storage = var.max_allocated_storage
+  storage_encrypted     = var.storage_encrypted
+  kms_key_id            = var.kms_key_id
+  storage_type          = var.storage_type
+  iops                  = var.iops
 
-  multi_az                             = var.multi_az
-  publicly_accessible                  = var.publicly_accessible
-  port                                 = 5432
+  multi_az            = var.multi_az
+  publicly_accessible = var.publicly_accessible
+  port                = 5432
 
-  db_subnet_group_name                 = aws_db_subnet_group.this.name
-  vpc_security_group_ids               = [aws_security_group.this.id]
+  db_subnet_group_name   = aws_db_subnet_group.this.name
+  vpc_security_group_ids = [aws_security_group.this.id]
 
-  backup_retention_period              = var.backup_retention_period
-  backup_window                        = var.backup_window
-  maintenance_window                   = var.maintenance_window
-  auto_minor_version_upgrade           = var.auto_minor_version_upgrade
-  deletion_protection                  = var.deletion_protection
+  backup_retention_period    = var.backup_retention_period
+  backup_window              = var.backup_window
+  maintenance_window         = var.maintenance_window
+  auto_minor_version_upgrade = var.auto_minor_version_upgrade
+  deletion_protection        = var.deletion_protection
 
-  performance_insights_enabled         = var.enable_performance_insights
-  performance_insights_kms_key_id      = var.performance_insights_kms_key_id
+  performance_insights_enabled    = var.enable_performance_insights
+  performance_insights_kms_key_id = var.performance_insights_kms_key_id
 
   # --- NEW: handle final snapshot requirements on destroy ---
-  skip_final_snapshot                  = var.skip_final_snapshot
-  final_snapshot_identifier            = var.skip_final_snapshot ? null : format(
+  skip_final_snapshot = var.skip_final_snapshot
+  final_snapshot_identifier = var.skip_final_snapshot ? null : format(
     "%s-%s",
     coalesce(var.final_snapshot_identifier_prefix, local.db_identifier),
     random_id.final_snap_suffix.hex
   )
 
-  parameter_group_name                 = length(var.parameter_overrides) > 0 ? aws_db_parameter_group.this[0].name : null
-  iam_database_authentication_enabled  = var.iam_database_authentication_enabled
+  parameter_group_name                = length(var.parameter_overrides) > 0 ? aws_db_parameter_group.this[0].name : null
+  iam_database_authentication_enabled = var.iam_database_authentication_enabled
 
-  apply_immediately                    = false
+  apply_immediately = false
 
   tags = local.common_tags
 

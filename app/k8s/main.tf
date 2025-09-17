@@ -11,8 +11,8 @@ resource "kubernetes_storage_class" "gp3" {
       "storageclass.kubernetes.io/is-default-class" = "false"
     }
   }
-  provisioner = "ebs.csi.aws.com"
-  parameters  = { type = "gp3" }
+  provisioner         = "ebs.csi.aws.com"
+  parameters          = { type = "gp3" }
   volume_binding_mode = "WaitForFirstConsumer"
 }
 
@@ -53,24 +53,44 @@ resource "kubernetes_deployment" "moodle" {
 
   spec {
     replicas = 1
-    selector { match_labels = { app = "moodle" } }
+    selector {
+      match_labels = { app = "moodle" }
+    }
 
     template {
-      metadata { labels = { app = "moodle" } }
+      metadata {
+        labels = { app = "moodle" }
+      }
 
       spec {
         container {
           name  = "moodle"
           image = "bitnami/moodle:latest"
 
-          port { container_port = 8080 }
+          port {
+            container_port = 8080
+          }
 
-          env { name = "MOODLE_DATABASE_TYPE"        value = "pgsql" }
-          env { name = "MOODLE_DATABASE_HOST"        value = module.rds_postgresql.endpoint }
-          env { name = "MOODLE_DATABASE_PORT_NUMBER" value = tostring(module.rds_postgresql.port) }
-          env { name = "MOODLE_DATABASE_NAME"        value = module.rds_postgresql.db_name }
-          env { name = "MOODLE_DATABASE_USER"        value = "app_user" } # match your RDS master_username
-
+          env {
+            name  = "MOODLE_DATABASE_TYPE"
+            value = "pgsql"
+          }
+          env {
+            name  = "MOODLE_DATABASE_HOST"
+            value = aws_db_instance.this.address
+          }
+          env {
+            name  = "MOODLE_DATABASE_PORT_NUMBER"
+            value = tostring(aws_db_instance.this.port)
+          }
+          env {
+            name  = "MOODLE_DATABASE_NAME"
+            value = aws_db_instance.this.db_name
+          }
+          env {
+            name  = "MOODLE_DATABASE_USER"
+            value = "app_user"
+          }
           env {
             name = "MOODLE_DATABASE_PASSWORD"
             value_from {
@@ -81,21 +101,27 @@ resource "kubernetes_deployment" "moodle" {
             }
           }
 
-          # Health checks
           liveness_probe {
-            http_get { path = "/" port = 8080 }
+            http_get {
+              path = "/"
+              port = 8080
+            }
             initial_delay_seconds = 60
             period_seconds        = 15
           }
+
           readiness_probe {
-            http_get { path = "/" port = 8080 }
+            http_get {
+              path = "/"
+              port = 8080
+            }
             initial_delay_seconds = 30
             period_seconds        = 10
           }
 
           volume_mount {
             name       = "moodle-data"
-            mount_path = "/bitnami/moodle"   # persistent uploads
+            mount_path = "/bitnami/moodle"
           }
         }
 
@@ -110,6 +136,7 @@ resource "kubernetes_deployment" "moodle" {
   }
 }
 
+
 # Service (cluster-internal; we’ll expose via Ingress/ALB below)
 resource "kubernetes_service" "moodle" {
   metadata {
@@ -117,12 +144,20 @@ resource "kubernetes_service" "moodle" {
     namespace = kubernetes_namespace.moodle.metadata[0].name
     labels    = { app = "moodle" }
   }
+
   spec {
     selector = { app = "moodle" }
-    port { name = "http"; port = 80; target_port = 8080 }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = 8080
+    }
+
     type = "ClusterIP"
   }
 }
+
 
 # If you prefer a direct Service LoadBalancer (no Ingress), uncomment:
 # resource "kubernetes_service" "moodle_lb" {
@@ -142,19 +177,19 @@ resource "kubernetes_service" "moodle" {
 
 # Ingress (ALB) with TLS via ACM
 variable "acm_certificate_arn" { type = string }
-variable "moodle_host"         { type = string } # e.g., "lms.example.com"
+variable "moodle_host" { type = string } # e.g., "lms.example.com"
 
 resource "kubernetes_ingress_v1" "moodle" {
   metadata {
     name      = "moodle"
     namespace = kubernetes_namespace.moodle.metadata[0].name
     annotations = {
-      "kubernetes.io/ingress.class"                  = "alb"
-      "alb.ingress.kubernetes.io/scheme"             = "internet-facing"
-      "alb.ingress.kubernetes.io/target-type"        = "ip"
-      "alb.ingress.kubernetes.io/certificate-arn"    = var.acm_certificate_arn
-      "alb.ingress.kubernetes.io/listen-ports"       = "[{\"HTTP\":80},{\"HTTPS\":443}]"
-      "alb.ingress.kubernetes.io/ssl-redirect"       = "443"
+      "kubernetes.io/ingress.class"               = "alb"
+      "alb.ingress.kubernetes.io/scheme"          = "internet-facing"
+      "alb.ingress.kubernetes.io/target-type"     = "ip"
+      "alb.ingress.kubernetes.io/certificate-arn" = var.acm_certificate_arn
+      "alb.ingress.kubernetes.io/listen-ports"    = "[{\"HTTP\":80},{\"HTTPS\":443}]"
+      "alb.ingress.kubernetes.io/ssl-redirect"    = "443"
     }
   }
   spec {
