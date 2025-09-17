@@ -1,0 +1,57 @@
+# --- Terraform ---
+**/.terraform/*
+.terraform/
+
+# Local state
+**/terraform.tfstate
+**/terraform.tfstate.*
+.terraform.tfstate.lock.info
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Variable files (keep only examples)
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!*.tfvars.json.example
+
+# Overrides (local-only)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Plans
+*.tfplan
+*.plan
+
+# Keep the dependency lockfile in version control
+!.terraform.lock.hcl
+
+# --- Secrets / creds (common) ---
+*.pem
+*.key
+*.p12
+*.cer
+*.crt
+*.csr
+*.der
+*.env
+*.env.*
+.envrc
+.kubeconfig
+kubeconfig
+secrets/*
+secret.*
+.secrets/
+
+# --- Tooling / editors ---
+.vscode/
+.idea/
+*.code-workspace
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
