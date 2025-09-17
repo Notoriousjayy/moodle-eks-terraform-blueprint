@@ -177,7 +177,7 @@ resource "kubernetes_service" "moodle" {
 
 # Ingress (ALB) with TLS via ACM
 variable "acm_certificate_arn" { type = string }
-variable "moodle_host" { type = string } # e.g., "lms.example.com"
+variable "moodle_host" { type = string } # e.g., "lms.techteenslearning.com"
 
 resource "kubernetes_ingress_v1" "moodle" {
   metadata {

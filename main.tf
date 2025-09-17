@@ -33,15 +33,13 @@ resource "random_id" "eks_suffix" {
 }
 
 locals {
-  cluster_name   = "${var.name}-eks-${random_id.eks_suffix.hex}" # e.g., moodle-eks-a1b2
-  caller_is_role = can(regex("arn:aws:iam::[0-9]+:role/", data.aws_caller_identity.current.arn))
+  cluster_name = "${var.name}-eks-${random_id.eks_suffix.hex}" # e.g., moodle-eks-a1b2
 
-  # If you also pass var.allowed_security_group_ids, include those with the node SG.
-  rds_allowed_sg_ids = distinct(
-    concat(
-      try(var.allowed_security_group_ids, []),
-      module.eks.node_security_group_id != "" ? [module.eks.node_security_group_id] : []
-    )
+  # IMPORTANT: Always include the "eks_nodes" key so for_each KEYS are known at plan.
+  # Values may still be unknown at plan, which is fine.
+  rds_allowed_sg_map = merge(
+    { for i, sg in try(var.allowed_security_group_ids, []) : "user_${i}" => sg },
+    { "eks_nodes" = module.eks.node_security_group_id }
   )
 }
 
@@ -58,18 +56,8 @@ module "eks" {
 
   enable_irsa = true
 
-  # Make sure the Terraform caller has cluster-admin
-  manage_aws_auth = true
-  aws_auth_roles = local.caller_is_role ? [{
-    rolearn  = data.aws_caller_identity.current.arn
-    username = "admin"
-    groups   = ["system:masters"]
-  }] : []
-  aws_auth_users = local.caller_is_role ? [] : [{
-    userarn  = data.aws_caller_identity.current.arn
-    username = "admin"
-    groups   = ["system:masters"]
-  }]
+  # Add the Terraform caller as cluster-admin via EKS Access Entries (replaces aws-auth args)
+  enable_cluster_creator_admin_permissions = true
 
   # One simple managed node group
   eks_managed_node_groups = {
@@ -111,8 +99,8 @@ module "rds_postgresql" {
   vpc_id             = var.vpc_id
   private_subnet_ids = var.private_subnet_ids
 
-  # Network access: include EKS node SG automatically
-  allowed_security_group_ids = local.rds_allowed_sg_ids
+  # Network access: include EKS node SG automatically (map with stable keys)
+  allowed_security_group_ids = local.rds_allowed_sg_map
   allowed_cidr_blocks        = var.allowed_cidr_blocks
 
   # DB config

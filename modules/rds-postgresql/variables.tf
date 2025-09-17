@@ -1,3 +1,5 @@
+# modules/rds-postgresql/variables.tf — drop-in replacement
+
 variable "name" {
   description = "Logical name/prefix for DB resources (used in identifiers and tags)."
   type        = string
@@ -145,9 +147,9 @@ variable "iam_database_authentication_enabled" {
 }
 
 variable "allowed_security_group_ids" {
-  description = "Security group IDs that may reach the DB on 5432 (e.g., EKS node/cluster SGs)."
-  type        = list(string)
-  default     = []
+  description = "Map of SG IDs allowed to reach the DB on 5432 (values). Keys must be stable (e.g., user_0, eks_nodes)."
+  type        = map(string)
+  default     = {}
 }
 
 variable "allowed_cidr_blocks" {

@@ -66,16 +66,21 @@ resource "aws_security_group" "this" {
 }
 
 # Ingress from allowed SGs
+# modules/rds-postgresql/main.tf — replace the ingress SG rule resource body with this
+
 resource "aws_security_group_rule" "ingress_sg" {
-  for_each                 = toset(var.allowed_security_group_ids)
+  # Keys are now guaranteed stable at plan time (user_*, eks_nodes).
+  for_each                 = var.allowed_security_group_ids
+
   type                     = "ingress"
-  protocol                 = "tcp"
+  security_group_id        = aws_security_group.this.id
   from_port                = 5432
   to_port                  = 5432
-  security_group_id        = aws_security_group.this.id
+  protocol                 = "tcp"
   source_security_group_id = each.value
-  description              = "Postgres from SG ${each.value}"
+  description              = "Allow DB from SG: ${each.key}"
 }
+
 
 # Ingress from allowed CIDRs (use sparingly)
 resource "aws_security_group_rule" "ingress_cidr" {
