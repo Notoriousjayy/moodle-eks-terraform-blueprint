@@ -411,21 +411,25 @@ resource "kubernetes_ingress_v1" "moodle" {
 module "rds_postgresql" {
   source = "./modules/rds-postgresql"
 
-  # keep your existing name (or default from variables.tf)
-  name = var.name
+  # minimal inputs to match your current wiring
+  name               = var.name
+  vpc_id             = aws_vpc.this.id
+  private_subnet_ids = [for s in values(aws_subnet.private) : s.id]
 
-  # >>> use the actual IDs from your plan output <<<
-  vpc_id             = "vpc-06d7e948b8ac6c1a0"
-  private_subnet_ids = [
-    "subnet-02b69e006ad0107d5",
-    "subnet-0761c9eec76993d18",
-  ]
-
-  # optional: reuse your k8s secret input if you have it
+  # reuse the same DB password you already feed into k8s
+  # (if you don't have var.db_password, remove this line to let the module
+  #  generate a random password and optionally write it to Secrets Manager)
   master_password = var.db_password
 
-  # critical so destroy won't block
+  # --- critical for clean destroy ---
   deletion_protection              = false
   skip_final_snapshot              = true
   final_snapshot_identifier_prefix = null
+
+  # optional: keep your existing tags/overrides if you had them
+  # tags = var.tags
+  # parameter_overrides = {
+  #   rds.force_ssl               = "1"
+  #   log_min_duration_statement  = "500"
+  # }
 }
