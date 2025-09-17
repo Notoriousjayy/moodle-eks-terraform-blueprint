@@ -39,12 +39,12 @@ variable "allowed_cidr_blocks" {
 
 # DB settings (aligned with your plan)
 variable "db_name" {
-  type        = string
-  default     = "appdb"
+  type    = string
+  default = "appdb"
 }
 variable "db_username" {
-  type        = string
-  default     = "app_user"
+  type    = string
+  default = "app_user"
 }
 variable "db_password" {
   description = "Master password for the RDS instance (also used in the k8s secret)"
