@@ -185,3 +185,16 @@ variable "iops" {
   type        = number
   default     = null
 }
+
+# --- NEW: snapshot behavior on destroy ---
+variable "skip_final_snapshot" {
+  description = "Whether to skip creating a final snapshot when destroying/replacing the DB."
+  type        = bool
+  default     = true
+}
+
+variable "final_snapshot_identifier_prefix" {
+  description = "Prefix for the final snapshot identifier when skip_final_snapshot = false. A random suffix is appended."
+  type        = string
+  default     = null
+}

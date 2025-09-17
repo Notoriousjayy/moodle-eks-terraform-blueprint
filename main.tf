@@ -1,158 +1,376 @@
 terraform {
   required_version = ">= 1.3.0"
   required_providers {
-    aws = { source = "hashicorp/aws", version = ">= 5.0" }
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.5"
+    }
   }
-}
-
-provider "aws" {
-  region = var.region
-}
-
-# ---------------- Root variables ----------------
-variable "region" {
-  description = "AWS region"
-  type        = string
-  default     = "us-east-1"
-}
-
-variable "vpc_cidr" {
-  description = "CIDR for the new VPC"
-  type        = string
-  default     = "10.0.0.0/16"
-}
-
-variable "num_azs" {
-  description = "How many AZs to spread private subnets across (min 2 for Multi-AZ RDS)."
-  type        = number
-  default     = 2
-
-  validation {
-    condition     = var.num_azs >= 2
-    error_message = "num_azs must be at least 2 for a Multi-AZ RDS deployment."
-  }
-}
-
-# Optional: allow connectivity to RDS until EKS exists (e.g., from your office IP)
-variable "allowed_cidr_blocks" {
-  description = "CIDR blocks that may connect to Postgres 5432 (temporary dev/test access)."
-  type        = list(string)
-  default     = []
-}
-
-# Optional: once you have EKS/node SGs, put them here for least-privileged access
-variable "allowed_security_group_ids" {
-  description = "Security groups allowed to reach Postgres 5432 (e.g., EKS cluster & node SGs)."
-  type        = list(string)
-  default     = []
-}
-
-# --------------- Build Network (VPC + Private Subnets) ---------------
-data "aws_availability_zones" "available" {
-  state = "available"
 }
 
 locals {
-  azs              = slice(data.aws_availability_zones.available.names, 0, var.num_azs)
-  # Create non-overlapping /19s within the VPC for private subnets
-  private_subnet_cidrs = [for i in range(var.num_azs) : cidrsubnet(var.vpc_cidr, 3, i)]
+  pg_major = try(regex("^([0-9]+)", var.engine_version)[0], "16")
+  family   = "postgres${local.pg_major}"
+
+  master_password_final = coalesce(var.master_password, random_password.master.result)
+
+  # Compat-safe identifier sanitizer (letters/digits only; hyphen-separated)
+  db_identifier = join("-", regexall("[a-z0-9]+", lower(var.name)))
+
+  # kept for backwards-compatibility (no longer used as the actual Secret name)
+  secret_name = coalesce(var.secret_name, "${var.name}-master-credentials")
+  common_tags = merge({ "Name" = var.name }, var.tags)
 }
 
-resource "aws_vpc" "this" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  tags = {
-    Name = "rds-postgres-vpc"
+# Short, stable suffix to avoid Secret name collisions
+resource "random_id" "secret_suffix" {
+  byte_length = 3
+  keepers = {
+    base = var.name
   }
 }
 
-# One private route table for all private subnets (no NAT/IGW needed for RDS)
-resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.this.id
-  tags = {
-    Name = "rds-private-rt"
+# Suffix for final snapshot identifier (always computed and used)
+resource "random_id" "final_snap_suffix" {
+  byte_length = 4
+}
+
+# Compute a safe, length-bounded, letter-starting final snapshot prefix
+locals {
+  # choose caller prefix if set, else db_identifier
+  _snap_prefix_base   = coalesce(var.final_snapshot_identifier_prefix, local.db_identifier)
+  # ensure starts with a letter (prepend 'a' if it does not)
+  _snap_prefix_fixed  = length(regexall("^[a-z]", lower(local._snap_prefix_base))) > 0 ? local._snap_prefix_base : "a${local._snap_prefix_base}"
+  # trim leading/trailing hyphens
+  _snap_prefix_trim   = trim(local._snap_prefix_fixed, "-")
+  # keep room for "-<8hex>" so stay under 255 chars (240 + 1 + 8 = 249)
+  _snap_prefix_trunc  = substr(local._snap_prefix_trim, 0, 240)
+  # final id always present; provider uses it only when destroying with skip_final_snapshot=false
+  final_snapshot_id   = "${local._snap_prefix_trunc}-${random_id.final_snap_suffix.hex}"
+}
+
+# Password generator that avoids '/', '@', '"' and space (RDS rules)
+resource "random_password" "master" {
+  length           = 20
+  special          = true
+  override_special = "!#$%^&*()-_=+[]{}:;,.?~%"
+  keepers = {
+    username = var.master_username
   }
 }
 
-# Create private subnets across AZs
-resource "aws_subnet" "private" {
-  for_each                = { for idx, az in local.azs : az => idx }
-  vpc_id                  = aws_vpc.this.id
-  cidr_block              = local.private_subnet_cidrs[each.value]
-  availability_zone       = each.key
-  map_public_ip_on_launch = false
+# DB subnet group across private subnets (same VPC as EKS)
+resource "aws_db_subnet_group" "this" {
+  name       = "${local.db_identifier}-subnets"
+  subnet_ids = var.private_subnet_ids
+  tags       = local.common_tags
+}
 
-  tags = {
-    Name = "rds-private-${each.key}"
-    # Helpful if you later add EKS:
-    "kubernetes.io/role/internal-elb" = "1"
+# Security group for RDS PostgreSQL
+resource "aws_security_group" "this" {
+  name        = "${local.db_identifier}-rds-sg"
+  description = "RDS PostgreSQL SG for ${var.name}"
+  vpc_id      = var.vpc_id
+  tags        = local.common_tags
+}
+
+# Ingress from allowed SGs
+resource "aws_security_group_rule" "ingress_sg" {
+  for_each                 = toset(var.allowed_security_group_ids)
+  type                     = "ingress"
+  protocol                 = "tcp"
+  from_port                = 5432
+  to_port                  = 5432
+  security_group_id        = aws_security_group.this.id
+  source_security_group_id = each.value
+  description              = "Postgres from SG ${each.value}"
+}
+
+# Ingress from allowed CIDRs (use sparingly)
+resource "aws_security_group_rule" "ingress_cidr" {
+  for_each          = toset(var.allowed_cidr_blocks)
+  type              = "ingress"
+  protocol          = "tcp"
+  from_port         = 5432
+  to_port           = 5432
+  security_group_id = aws_security_group.this.id
+  cidr_blocks       = [each.value]
+  description       = "Postgres from CIDR ${each.value}"
+}
+
+# Egress: allow outbound (to S3/KMS/etc. as needed)
+resource "aws_security_group_rule" "egress_all" {
+  type              = "egress"
+  protocol          = "-1"
+  from_port         = 0
+  to_port           = 0
+  security_group_id = aws_security_group.this.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "Egress"
+}
+
+# Optional parameter group
+resource "aws_db_parameter_group" "this" {
+  count  = length(var.parameter_overrides) > 0 ? 1 : 0
+  name   = "${local.db_identifier}-pg"
+  family = local.family
+  tags   = local.common_tags
+
+  dynamic "parameter" {
+    for_each = var.parameter_overrides
+    content {
+      name  = parameter.key
+      value = parameter.value
+    }
   }
 }
 
-# Associate all private subnets with the private route table
-resource "aws_route_table_association" "private" {
-  for_each       = aws_subnet.private
-  route_table_id = aws_route_table.private.id
-  subnet_id      = each.value.id
+# Secrets Manager secret (username/password)
+# Use caller-provided name if set; otherwise append a random suffix
+resource "aws_secretsmanager_secret" "master" {
+  count       = var.create_master_secret ? 1 : 0
+  name        = var.secret_name != null ? var.secret_name : "${var.name}-master-credentials-${random_id.secret_suffix.hex}"
+  description = "Master credentials for ${var.name} PostgreSQL on RDS"
+  tags        = local.common_tags
 }
 
-# ------------------- Call the RDS module -------------------
-module "rds_postgresql" {
-  source = "./modules/rds-postgresql"
+resource "aws_secretsmanager_secret_version" "master" {
+  count       = var.create_master_secret ? 1 : 0
+  secret_id   = aws_secretsmanager_secret.master[0].id
+  secret_string = jsonencode({
+    username = var.master_username
+    password = local.master_password_final
+  })
+}
 
-  name               = "prod-app-postgres"
-  vpc_id             = aws_vpc.this.id
-  private_subnet_ids = [for s in aws_subnet.private : s.id]
+# RDS PostgreSQL instance
+resource "aws_db_instance" "this" {
+  identifier                           = local.db_identifier
+  engine                               = "postgres"
+  engine_version                       = var.engine_version
+  db_name                              = var.db_name
+  username                             = var.master_username
+  password                             = local.master_password_final
+  instance_class                       = var.instance_class
 
-  db_name         = "appdb"
-  master_username = "app_user"
-  # master_password optional (secret auto-created if omitted)
+  allocated_storage                    = var.allocated_storage
+  max_allocated_storage                = var.max_allocated_storage
+  storage_encrypted                    = var.storage_encrypted
+  kms_key_id                           = var.kms_key_id
+  storage_type                         = var.storage_type
+  iops                                 = var.iops
 
-  engine_version            = "16.4"
-  instance_class            = "db.m7g.large"
-  allocated_storage         = 100
-  max_allocated_storage     = 1000
-  multi_az                  = true
-  storage_encrypted         = true
-  publicly_accessible       = false
-  enable_performance_insights = true
-  backup_retention_period     = 7
-  deletion_protection         = true
+  multi_az                             = var.multi_az
+  publicly_accessible                  = var.publicly_accessible
+  port                                 = 5432
 
-  # Access control (pick one or both). While you don't have EKS yet, use allowed_cidr_blocks.
-  allowed_security_group_ids = var.allowed_security_group_ids
-  allowed_cidr_blocks        = var.allowed_cidr_blocks
+  db_subnet_group_name                 = aws_db_subnet_group.this.name
+  vpc_security_group_ids               = [aws_security_group.this.id]
 
-  parameter_overrides = {
-    "rds.force_ssl"              = "1"
-    "log_min_duration_statement" = "500"
+  backup_retention_period              = var.backup_retention_period
+  backup_window                        = var.backup_window
+  maintenance_window                   = var.maintenance_window
+  auto_minor_version_upgrade           = var.auto_minor_version_upgrade
+  deletion_protection                  = var.deletion_protection
+
+  performance_insights_enabled         = var.enable_performance_insights
+  performance_insights_kms_key_id      = var.performance_insights_kms_key_id
+
+  # Always set a valid final snapshot identifier; provider uses it only if skip_final_snapshot = false
+  skip_final_snapshot                  = var.skip_final_snapshot
+  final_snapshot_identifier            = local.final_snapshot_id
+
+  parameter_group_name                 = length(var.parameter_overrides) > 0 ? aws_db_parameter_group.this[0].name : null
+  iam_database_authentication_enabled  = var.iam_database_authentication_enabled
+
+  apply_immediately                    = false
+
+  tags = local.common_tags
+
+  lifecycle {
+    ignore_changes = [password]
+  }
+}
+
+# Namespace
+resource "kubernetes_namespace" "moodle" {
+  metadata { name = "moodle" }
+}
+
+# Optional: gp3 storage class (EKS often sets a default; include if needed)
+resource "kubernetes_storage_class" "gp3" {
+  metadata {
+    name = "gp3"
+    annotations = {
+      "storageclass.kubernetes.io/is-default-class" = "false"
+    }
+  }
+  provisioner = "ebs.csi.aws.com"
+  parameters  = { type = "gp3" }
+  volume_binding_mode = "WaitForFirstConsumer"
+}
+
+# PersistentVolumeClaim (10Gi to start)
+resource "kubernetes_persistent_volume_claim" "moodle_pvc" {
+  metadata {
+    name      = "moodle-pvc"
+    namespace = kubernetes_namespace.moodle.metadata[0].name
+  }
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources { requests = { storage = "20Gi" } }
+    storage_class_name = kubernetes_storage_class.gp3.metadata[0].name
+  }
+}
+
+# DB password handling (simple path): set one value and reuse for RDS + k8s
+# - Provide var.db_password and pass into your RDS module as master_password
+# - Store same into a Kubernetes Secret to feed the app
+resource "kubernetes_secret" "db" {
+  metadata {
+    name      = "moodle-db"
+    namespace = kubernetes_namespace.moodle.metadata[0].name
+  }
+  data = {
+    password = base64encode(var.db_password)
+  }
+  type = "Opaque"
+}
+
+# Moodle Deployment (Bitnami image includes Apache web server)
+resource "kubernetes_deployment" "moodle" {
+  metadata {
+    name      = "moodle"
+    namespace = kubernetes_namespace.moodle.metadata[0].name
+    labels    = { app = "moodle" }
   }
 
-  tags = {
-    Environment = "prod"
-    Service     = "my-app"
+  spec {
+    replicas = 1
+    selector { match_labels = { app = "moodle" } }
+
+    template {
+      metadata { labels = { app = "moodle" } }
+
+      spec {
+        container {
+          name  = "moodle"
+          image = "bitnami/moodle:latest"
+
+          port { container_port = 8080 }
+
+          env { name = "MOODLE_DATABASE_TYPE"        value = "pgsql" }
+          env { name = "MOODLE_DATABASE_HOST"        value = module.rds_postgresql.endpoint }
+          env { name = "MOODLE_DATABASE_PORT_NUMBER" value = tostring(module.rds_postgresql.port) }
+          env { name = "MOODLE_DATABASE_NAME"        value = module.rds_postgresql.db_name }
+          env { name = "MOODLE_DATABASE_USER"        value = "app_user" } # match your RDS master_username
+
+          env {
+            name = "MOODLE_DATABASE_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.db.metadata[0].name
+                key  = "password"
+              }
+            }
+          }
+
+          # Health checks
+          liveness_probe {
+            http_get { path = "/" port = 8080 }
+            initial_delay_seconds = 60
+            period_seconds        = 15
+          }
+          readiness_probe {
+            http_get { path = "/" port = 8080 }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+          }
+
+          volume_mount {
+            name       = "moodle-data"
+            mount_path = "/bitnami/moodle"   # persistent uploads
+          }
+        }
+
+        volume {
+          name = "moodle-data"
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.moodle_pvc.metadata[0].name
+          }
+        }
+      }
+    }
   }
 }
 
-# ------------------- Useful outputs -------------------
-output "vpc_id" {
-  value       = aws_vpc.this.id
-  description = "Created VPC ID."
+# Service (cluster-internal; we’ll expose via Ingress/ALB below)
+resource "kubernetes_service" "moodle" {
+  metadata {
+    name      = "moodle"
+    namespace = kubernetes_namespace.moodle.metadata[0].name
+    labels    = { app = "moodle" }
+  }
+  spec {
+    selector = { app = "moodle" }
+    port { name = "http"; port = 80; target_port = 8080 }
+    type = "ClusterIP"
+  }
 }
 
-output "private_subnet_ids" {
-  value       = [for s in aws_subnet.private : s.id]
-  description = "Created private subnet IDs."
-}
+# If you prefer a direct Service LoadBalancer (no Ingress), uncomment:
+# resource "kubernetes_service" "moodle_lb" {
+#   metadata {
+#     name      = "moodle-lb"
+#     namespace = kubernetes_namespace.moodle.metadata[0].name
+#     annotations = {
+#       "service.beta.kubernetes.io/aws-load-balancer-scheme" = "internet-facing"
+#     }
+#   }
+#   spec {
+#     selector = { app = "moodle" }
+#     port { name = "http"; port = 80; target_port = 8080 }
+#     type = "LoadBalancer"
+#   }
+# }
 
-output "rds_endpoint" {
-  value       = module.rds_postgresql.endpoint
-  description = "PostgreSQL endpoint hostname."
-}
+# Ingress (ALB) with TLS via ACM
+variable "acm_certificate_arn" { type = string }
+variable "moodle_host"         { type = string } # e.g., "lms.example.com"
 
-output "rds_port" {
-  value       = module.rds_postgresql.port
-  description = "PostgreSQL port."
+resource "kubernetes_ingress_v1" "moodle" {
+  metadata {
+    name      = "moodle"
+    namespace = kubernetes_namespace.moodle.metadata[0].name
+    annotations = {
+      "kubernetes.io/ingress.class"                  = "alb"
+      "alb.ingress.kubernetes.io/scheme"             = "internet-facing"
+      "alb.ingress.kubernetes.io/target-type"        = "ip"
+      "alb.ingress.kubernetes.io/certificate-arn"    = var.acm_certificate_arn
+      "alb.ingress.kubernetes.io/listen-ports"       = "[{\"HTTP\":80},{\"HTTPS\":443}]"
+      "alb.ingress.kubernetes.io/ssl-redirect"       = "443"
+    }
+  }
+  spec {
+    rule {
+      host = var.moodle_host
+      http {
+        path {
+          path      = "/"
+          path_type = "Prefix"
+          backend {
+            service {
+              name = kubernetes_service.moodle.metadata[0].name
+              port { number = 80 }
+            }
+          }
+        }
+      }
+    }
+    tls { hosts = [var.moodle_host] }
+  }
 }

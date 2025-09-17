@@ -21,8 +21,22 @@ locals {
   # Compat-safe identifier sanitizer
   db_identifier = join("-", regexall("[a-z0-9]+", lower(var.name)))
 
+  # Kept for backwards compatibility (not used for the Secret name anymore)
   secret_name = coalesce(var.secret_name, "${var.name}-master-credentials")
   common_tags = merge({ "Name" = var.name }, var.tags)
+}
+
+# Short, stable suffix to avoid Secret name collisions
+resource "random_id" "secret_suffix" {
+  byte_length = 3
+  keepers = {
+    base = var.name
+  }
+}
+
+# Suffix for final snapshot identifier (only referenced if skip_final_snapshot = false)
+resource "random_id" "final_snap_suffix" {
+  byte_length = 4
 }
 
 # Password generator that avoids '/', '@', '\"', and space
@@ -103,16 +117,17 @@ resource "aws_db_parameter_group" "this" {
 }
 
 # Secrets Manager secret for master credentials (username/password only)
+# Use caller-provided name if set; otherwise append a random suffix to avoid "scheduled for deletion" conflicts
 resource "aws_secretsmanager_secret" "master" {
   count       = var.create_master_secret ? 1 : 0
-  name        = local.secret_name
+  name        = var.secret_name != null ? var.secret_name : "${var.name}-master-credentials-${random_id.secret_suffix.hex}"
   description = "Master credentials for ${var.name} PostgreSQL on RDS"
   tags        = local.common_tags
 }
 
 resource "aws_secretsmanager_secret_version" "master" {
-  count     = var.create_master_secret ? 1 : 0
-  secret_id = aws_secretsmanager_secret.master[0].id
+  count       = var.create_master_secret ? 1 : 0
+  secret_id   = aws_secretsmanager_secret.master[0].id
   secret_string = jsonencode({
     username = var.master_username
     password = local.master_password_final
@@ -151,6 +166,14 @@ resource "aws_db_instance" "this" {
 
   performance_insights_enabled         = var.enable_performance_insights
   performance_insights_kms_key_id      = var.performance_insights_kms_key_id
+
+  # --- NEW: handle final snapshot requirements on destroy ---
+  skip_final_snapshot                  = var.skip_final_snapshot
+  final_snapshot_identifier            = var.skip_final_snapshot ? null : format(
+    "%s-%s",
+    coalesce(var.final_snapshot_identifier_prefix, local.db_identifier),
+    random_id.final_snap_suffix.hex
+  )
 
   parameter_group_name                 = length(var.parameter_overrides) > 0 ? aws_db_parameter_group.this[0].name : null
   iam_database_authentication_enabled  = var.iam_database_authentication_enabled
