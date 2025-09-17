@@ -1,186 +1,86 @@
 variable "name" {
-  type    = string
-  default = "moodle"
-}
-
-variable "tags" {
-  type    = map(string)
-  default = {}
+  description = "Base name/prefix for resources"
+  type        = string
+  default     = "moodle"
 }
 
 variable "region" {
-  type    = string
-  default = null
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
 }
 
-variable "vpc_cidr" {
-  type    = string
-  default = null
+variable "eks_cluster_name" {
+  description = "Name of the EKS cluster to deploy into"
+  type        = string
 }
 
-variable "engine_version" {
-  type    = string
-  default = "16.4"
+variable "vpc_id" {
+  description = "VPC ID where RDS and EKS live"
+  type        = string
 }
 
+variable "private_subnet_ids" {
+  description = "Private subnet IDs for RDS (>= 2 for Multi-AZ)"
+  type        = list(string)
+}
+
+variable "allowed_security_group_ids" {
+  description = "Security group IDs allowed to reach RDS (e.g., EKS node SGs)"
+  type        = list(string)
+  default     = []
+}
+
+variable "allowed_cidr_blocks" {
+  description = "CIDRs allowed to reach RDS (use only if you cannot use SG IDs)"
+  type        = list(string)
+  default     = []
+}
+
+# DB settings (aligned with your plan)
 variable "db_name" {
-  type    = string
-  default = "appdb"
+  type        = string
+  default     = "appdb"
+}
+variable "db_username" {
+  type        = string
+  default     = "app_user"
+}
+variable "db_password" {
+  description = "Master password for the RDS instance (also used in the k8s secret)"
+  type        = string
+  sensitive   = true
 }
 
-variable "master_username" {
-  type    = string
-  default = "app_user"
-}
-
-variable "master_password" {
-  type      = string
-  default   = null
-  sensitive = true
-}
-
-variable "secret_name" {
-  type    = string
-  default = null
-}
-
-variable "final_snapshot_identifier_prefix" {
-  type    = string
-  default = null
-}
-
-variable "skip_final_snapshot" {
-  type    = bool
-  default = true
-}
-
-variable "deletion_protection" {
-  type    = bool
-  default = false
-}
-
-variable "instance_class" {
+variable "db_instance_class" {
   type    = string
   default = "db.t4g.medium"
 }
-
-variable "allocated_storage" {
+variable "db_allocated_storage" {
   type    = number
   default = 100
 }
-
-variable "max_allocated_storage" {
-  type    = number
-  default = 0
-}
-
-variable "storage_encrypted" {
+variable "db_multi_az" {
   type    = bool
   default = true
 }
-
-variable "kms_key_id" {
+variable "db_engine_version" {
   type    = string
-  default = null
+  default = "16.4"
 }
-
-variable "storage_type" {
+variable "db_storage_type" {
   type    = string
   default = "gp3"
 }
 
-variable "iops" {
-  type    = number
-  default = null
-}
-
-variable "multi_az" {
-  type    = bool
-  default = true
-}
-
-variable "publicly_accessible" {
-  type    = bool
-  default = false
-}
-
-variable "backup_retention_period" {
-  type    = number
-  default = 7
-}
-
-variable "backup_window" {
-  type    = string
-  default = null
-}
-
-variable "maintenance_window" {
-  type    = string
-  default = null
-}
-
-variable "auto_minor_version_upgrade" {
-  type    = bool
-  default = true
-}
-
-variable "enable_performance_insights" {
-  type    = bool
-  default = true
-}
-
-variable "performance_insights_kms_key_id" {
-  type    = string
-  default = null
-}
-
-variable "iam_database_authentication_enabled" {
-  type    = bool
-  default = false
-}
-
-variable "parameter_overrides" {
-  type    = map(string)
-  default = {}
-}
-
-variable "vpc_id" {
-  type    = string
-  default = ""
-}
-
-variable "private_subnet_ids" {
-  type    = list(string)
-  default = []
-}
-
-variable "allowed_security_group_ids" {
-  type    = list(string)
-  default = []
-}
-
-variable "allowed_cidr_blocks" {
-  type    = list(string)
-  default = []
-}
-
-variable "acm_certificate_arn" {
-  type    = string
-  default = ""
-}
-
+# Ingress / TLS
 variable "moodle_host" {
-  type    = string
-  default = ""
+  description = "Public hostname for Moodle (ALB Ingress)"
+  type        = string
+  default     = ""
 }
-
-variable "db_password" {
-  type      = string
-  default   = null
-  sensitive = true
-}
-
-variable "create_master_secret" {
-  type    = bool
-  default = true
+variable "acm_certificate_arn" {
+  description = "ACM cert ARN for TLS on the ALB"
+  type        = string
+  default     = ""
 }
