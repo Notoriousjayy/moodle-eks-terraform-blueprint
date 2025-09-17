@@ -152,7 +152,7 @@ module "eks" {
       max_size                    = 3
       desired_size                = 1
       subnet_ids                  = local.private_subnet_ids_effective
-      use_custom_launch_template  = true
+      use_custom_launch_template  = false
       launch_template_id          = aws_launch_template.mng.id
       launch_template_version     = "$Latest"
       ami_type                    = "AL2_x86_64" # let EKS pick the optimized AMI
@@ -167,8 +167,6 @@ module "eks" {
     aws-ebs-csi-driver = {}
   }
 
-  # ALB Ingress Controller for your kubernetes_ingress_v1 "alb"
-  enable_aws_load_balancer_controller = true
 
   tags = {
     Project = var.name
@@ -176,6 +174,31 @@ module "eks" {
 
   depends_on = [aws_launch_template.mng]
 }
+
+module "eks_blueprints_addons" {
+  source  = "aws-ia/eks-blueprints-addons/aws"
+  version = "~> 1.13"
+
+  cluster_name      = module.eks.cluster_name
+  cluster_endpoint  = module.eks.cluster_endpoint
+  cluster_version   = module.eks.cluster_version
+  oidc_provider_arn = module.eks.oidc_provider_arn
+
+  # turn on ALB Controller
+  enable_aws_load_balancer_controller = true
+
+  # optional chart settings; vpcId helps when auto-detection fails
+  aws_load_balancer_controller = {
+    set = [
+      { name = "vpcId", value = local.vpc_id_effective },
+      # { name = "enableServiceMutatorWebhook", value = "false" } # optional behavior tweak
+    ]
+  }
+
+  tags = { Project = var.name }
+  depends_on = [module.eks]
+}
+
 
 # Kubernetes auth for provider
 data "aws_eks_cluster_auth" "this" {

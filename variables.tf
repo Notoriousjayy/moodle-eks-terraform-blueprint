@@ -76,7 +76,7 @@ variable "cluster_version" {
 }
 variable "node_instance_types" {
   type    = list(string)
-  default = ["t3.medium"]
+  default = ["t2.medium"] # changed from ["t3.medium"] to satisfy SCP
 }
 variable "node_desired_size" {
   type    = number
