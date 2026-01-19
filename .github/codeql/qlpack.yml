@@ -1,0 +1,4 @@
+name: Notoriousjayy/moodle-eks-terraform-blueprint-codeql-pack
+version: 0.0.1
+library: true
+dependencies: {}
